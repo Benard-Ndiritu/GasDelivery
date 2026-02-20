@@ -1,25 +1,29 @@
 from django.db import models
-
-# Create your models here.
 from dealers.models import DealerProfile
 
 class GasType(models.Model):
-    dealer = models.ForeignKey(DealerProfile, on_delete=models.CASCADE)
-    name = models.CharField(max_length=100)
+    CYLINDER_CHOICES = (
+        ('6kg', '6kg'),
+        ('13kg', '13kg'),
+    )
+    name = models.CharField(max_length=100, unique=True)
+    cylinder_size = models.CharField(max_length=5, choices=CYLINDER_CHOICES)
     created_at = models.DateTimeField(auto_now_add=True)
 
-    class Meta:
-        unique_together = ('dealer', 'name')
+    def __str__(self):
+        return f"{self.name} - {self.cylinder_size}"
+
 
 class GasInventory(models.Model):
-    CYLINDER_CHOICES = (('6kg','6kg'),('13kg','13kg'))
+    dealer = models.ForeignKey(DealerProfile, on_delete=models.CASCADE, related_name='inventory')
     gas_type = models.ForeignKey(GasType, on_delete=models.CASCADE)
-    cylinder_size = models.CharField(max_length=5, choices=CYLINDER_CHOICES)
     price_refill = models.DecimalField(max_digits=10, decimal_places=2)
     price_exchange = models.DecimalField(max_digits=10, decimal_places=2)
     stock_available = models.BooleanField(default=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        unique_together = ('gas_type','cylinder_size')
+        unique_together = ('dealer', 'gas_type')
 
+    def __str__(self):
+        return f"{self.dealer.name} - {self.gas_type.name}"

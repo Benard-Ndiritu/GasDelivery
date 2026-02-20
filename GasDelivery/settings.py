@@ -10,7 +10,10 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
+
+
 from pathlib import Path
+CORS_ALLOW_ALL_ORIGINS = True
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -52,6 +55,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware', 
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -144,3 +148,24 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.1/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# Custom user model
+AUTH_USER_MODEL = 'users.User'
+
+# DRF + JWT configuration
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+    'DEFAULT_PERMISSION_CLASSES': (
+        'rest_framework.permissions.IsAuthenticated',
+    ),
+}
+
+# M-Pesa Settings
+MPESA_CONSUMER_KEY = 'bJLQA5ZPlA6MMsn1BmV8PvSqxRiEkiXnKeZ9bFlB0rWGurcu'
+MPESA_CONSUMER_SECRET = 'vIUm1NgnHNrPYGNjoXXKRO2adm26PHnI7sRlZ8hFQklbB26Kej2p3us7bEm2AyJw'
+MPESA_SHORTCODE = '174379'
+MPESA_PASSKEY = 'bfb279f9aa9bdbcf158e97dd71a467cd2e0c893059b10f78e6b72ada1ed2c919'
+MPESA_CALLBACK_URL = 'https://visceral-epinastic-felisa.ngrok-free.dev/api/payments/mpesa-callback/'

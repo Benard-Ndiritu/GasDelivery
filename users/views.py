@@ -1,39 +1,30 @@
-from django.shortcuts import render
-
-# Create your views here.
-from rest_framework.views import APIView
 from rest_framework.response import Response
-from .models import User
-from .serializers import UserSerializer
 from rest_framework import generics, status
 from rest_framework_simplejwt.tokens import RefreshToken
-
-class RegisterUser(APIView):
-    def post(self, request):
-        serializer = UserSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-class LoginUser(APIView):
-    def post(self, request):
-        # Placeholder for JWT login logic
-        return Response({"message": "JWT login placeholder"})
-    
+from .models import User
+from .serializers import UserSerializer
+from .serializers import LoginSerializer
+from rest_framework.permissions import AllowAny
 
 
-# Customer & Dealer Registration
+# Register User (Customer or Dealer)
 class RegisterUser(generics.CreateAPIView):
     serializer_class = UserSerializer
+    permission_classes = [AllowAny]
+
 
 # JWT Login
 class LoginUser(generics.GenericAPIView):
-    serializer_class = UserSerializer
+    serializer_class = LoginSerializer
+    permission_classes = [AllowAny]
 
     def post(self, request):
-        phone = request.data.get("phone_number")
-        password = request.data.get("password")
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        phone = serializer.validated_data["phone_number"]
+        password = serializer.validated_data["password"]
+
         try:
             user = User.objects.get(phone_number=phone)
             if user.check_password(password):
@@ -45,5 +36,5 @@ class LoginUser(generics.GenericAPIView):
                 })
         except User.DoesNotExist:
             pass
-        return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)
 
+        return Response({"error": "Invalid credentials"}, status=status.HTTP_401_UNAUTHORIZED)

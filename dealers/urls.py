@@ -1,7 +1,9 @@
 from django.urls import path
-from . import views
+from .views import CreateDealerProfile, ListDealers, DealerDetail, UpdateDealerProfile
 
 urlpatterns = [
-    # Example endpoint
-    # path('list/', views.DealerList.as_view(), name='dealer-list'),
+    path('', ListDealers.as_view()),
+    path('create/', CreateDealerProfile.as_view()),
+    path('<int:pk>/', DealerDetail.as_view()),
+    path('update/', UpdateDealerProfile.as_view()),
 ]
