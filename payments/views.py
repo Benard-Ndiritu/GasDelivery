@@ -50,19 +50,35 @@ class MpesaPaymentCallback(APIView):
 
     def post(self, request):
         data = request.data
+        
         try:
-            payment = Payment.objects.get(order_id=data['order_id'])
-            payment.status = 'PAID'
-            payment.mpesa_receipt = data['receipt']
-            payment.save()
+            # Safaricom sends data in this nested format
+            stk_callback = data['Body']['stkCallback']
+            result_code = stk_callback['ResultCode']
+            checkout_request_id = stk_callback['CheckoutRequestID']
+            
+            if result_code == 0:
+                # Payment successful
+                callback_metadata = stk_callback['CallbackMetadata']['Item']
+                
+                receipt = next((item['Value'] for item in callback_metadata if item['Name'] == 'MpesaReceiptNumber'), None)
+                amount = next((item['Value'] for item in callback_metadata if item['Name'] == 'Amount'), None)
+                phone = next((item['Value'] for item in callback_metadata if item['Name'] == 'PhoneNumber'), None)
 
-            # Mark order as completed
-            payment.order.status = 'completed'
-            payment.order.save()
+                # Find payment by amount and update
+                payment = Payment.objects.filter(status='PENDING').last()
+                if payment:
+                    payment.status = 'PAID'
+                    payment.mpesa_receipt = receipt
+                    payment.save()
 
-            return Response({"status": "success"})
-        except Payment.DoesNotExist:
-            return Response({"error": "Payment not found"}, status=404)
+                    payment.order.status = 'completed'
+                    payment.order.save()
+
+            return Response({'ResultCode': 0, 'ResultDesc': 'Success'})
+
+        except Exception as e:
+            return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
 
 # Dealer confirms cash payment
 class CashPaymentConfirm(APIView):

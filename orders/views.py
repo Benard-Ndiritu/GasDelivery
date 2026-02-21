@@ -7,6 +7,8 @@ from .models import Order
 from .serializers import OrderSerializer
 from .services import find_available_dealer
 from gas.models import GasType
+from channels.layers import get_channel_layer
+from asgiref.sync import async_to_sync
 
 class IsCustomer(IsAuthenticated):
     def has_permission(self, request, view):
@@ -53,6 +55,18 @@ class PlaceOrderView(APIView):
             customer_longitude=customer_lon,
         )
 
+        channel_layer = get_channel_layer()
+        async_to_sync(channel_layer.group_send)(
+            f'dealer_{dealer.id}',
+            {
+                'type': 'order_notification',
+                'order_id': order.id,
+                'customer_phone': request.user.phone_number,
+                'gas_type': gas_type.name,
+                'price': str(order.price),
+            }
+        )
+
         return Response(OrderSerializer(order).data, status=201)
 
 # Customer views their orders
@@ -68,9 +82,11 @@ class DealerOrderListView(APIView):
     permission_classes = [IsDealer]
 
     def get(self, request):
-        orders = Order.objects.filter(dealer=request.user.dealerprofile).order_by('-created_at')
-        return Response(OrderSerializer(orders, many=True).data)
-
+        try:
+            orders = Order.objects.filter(dealer=request.user.dealerprofile).order_by('-created_at')
+            return Response(OrderSerializer(orders, many=True).data)
+        except Exception:
+            return Response({"error": "Dealer profile not found"}, status=404)
 # Dealer updates order status
 class UpdateOrderStatusView(APIView):
     permission_classes = [IsDealer]
