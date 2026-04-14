@@ -103,7 +103,7 @@ CHANNEL_LAYERS = {
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
 DATABASES = {
-    'default': dj_database_url.parse(os.environ.get('DATABASE_URL'))
+    'default': dj_database_url.parse(os.environ.get('DATABASE_URL', 'sqlite:///db.sqlite3'))
 }
 
 # Password validation
@@ -180,3 +180,5 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'ndiritubenard99@gmail.com'
 EMAIL_HOST_PASSWORD = 'qkxjrdbkrgkywauj'
 DEFAULT_FROM_EMAIL = 'ndiritubenard99@gmail.com'
+
+CSRF_TRUSTED_ORIGINS = ['https://gas-delivery-backend-ekqu.onrender.com']
