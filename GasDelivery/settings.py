@@ -103,9 +103,7 @@ CHANNEL_LAYERS = {
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
 DATABASES = {
-    'default': dj_database_url.config(
-        default=os.environ.get('DATABASE_URL', f'sqlite:///{BASE_DIR}/db.sqlite3')
-    )
+    'default': dj_database_url.parse(os.environ.get('postgresql://postgres.rgyikrcojeucnzhxxxbo:Benard8865.@aws-1-us-east-1.pooler.supabase.com:5432/postgres'))
 }
 
 # Password validation
@@ -178,6 +176,6 @@ EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'ndiritubenard99@gmail.com'       # Your Gmail address
-EMAIL_HOST_PASSWORD = 'qkxj rdbk rgky wauj'       # Gmail App Password
-DEFAULT_FROM_EMAIL = 'ndiritubenard99@gmail.com'
+EMAIL_HOST_USER = os.environ.get('ndiritubenard99@gmail.com')       # Your Gmail address
+EMAIL_HOST_PASSWORD = os.environ.get('qkxj rdbk rgky wauj')       # Gmail App Password
+DEFAULT_FROM_EMAIL = os.environ.get('ndiritubenard99@gmail.com')
