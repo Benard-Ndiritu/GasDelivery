@@ -6,7 +6,10 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'phone_number', 'password', 'role', 'created_at']
+        fields = ['phone_number', 'password', 'role', 'created_at']
+        extra_kwargs = {
+            'role': {'default': 'CUSTOMER'}
+        }
 
     def create(self, validated_data):
         return User.objects.create_user(
@@ -14,7 +17,6 @@ class UserSerializer(serializers.ModelSerializer):
             password=validated_data['password'],
             role=validated_data.get('role', 'CUSTOMER')
         )
-
 
 class LoginSerializer(serializers.Serializer):
     phone_number = serializers.CharField()
