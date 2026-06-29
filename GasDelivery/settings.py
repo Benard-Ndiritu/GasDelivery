@@ -12,9 +12,17 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 import os
 import dj_database_url
+from datetime import timedelta
+
 
 from pathlib import Path
 CORS_ALLOW_ALL_ORIGINS = True
+
+
+SIMPLE_JWT = {
+    'USER_ID_FIELD': 'phone_number',
+    'USER_ID_CLAIM': 'phone_number',
+}
 
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
