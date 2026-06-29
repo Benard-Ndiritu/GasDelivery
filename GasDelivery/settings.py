@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     'orders',
     'payments',
     'realtime',
+    'anymail',
 ]
 
 MIDDLEWARE = [
@@ -101,9 +102,11 @@ CHANNEL_LAYERS = {
 
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
-
+DATABASE_URL = os.environ.get('DATABASE_URL')
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is not set!")
 DATABASES = {
-    'default': dj_database_url.parse(os.environ.get('DATABASE_URL', 'sqlite:///db.sqlite3'))
+    'default': dj_database_url.parse(DATABASE_URL)
 }
 
 # Password validation
@@ -173,12 +176,10 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Email Configuration
 # Email Configuration
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'ndiritubenard99@gmail.com'
-EMAIL_HOST_PASSWORD = 'qkxjrdbkrgkywauj'
-DEFAULT_FROM_EMAIL = 'ndiritubenard99@gmail.com'
+EMAIL_BACKEND = 'anymail.backends.resend.EmailBackend'
+ANYMAIL = {
+    'RESEND_API_KEY': os.environ.get('RESEND_API_KEY'),
+}
+DEFAULT_FROM_EMAIL = 'onboarding@resend.dev'
 
 CSRF_TRUSTED_ORIGINS = ['https://gas-delivery-backend-ekqu.onrender.com']

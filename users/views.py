@@ -14,6 +14,17 @@ class RegisterUser(generics.CreateAPIView):
     serializer_class = UserSerializer
     permission_classes = [AllowAny]
 
+    def perform_create(self, serializer):
+        user = serializer.save()
+        if user.role == 'DEALER':
+            DealerProfile.objects.create(
+                user=user,
+                name=f"Dealer {user.phone_number}",
+                latitude=0.0,
+                longitude=0.0,
+                delivery_radius=5,
+            )
+
 
 class LoginUser(generics.GenericAPIView):
     serializer_class = LoginSerializer
