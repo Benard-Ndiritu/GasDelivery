@@ -16,7 +16,6 @@ class RegisterUser(generics.CreateAPIView):
 
     def perform_create(self, serializer):
         user = serializer.save()
-        user.refresh_from_db()  # Ensure user has a valid pk
         if user.role == 'DEALER':
             DealerProfile.objects.create(
                 user=user,
