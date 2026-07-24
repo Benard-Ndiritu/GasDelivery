@@ -10,7 +10,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ('dealers', '0002_initial'),
+        ('dealers', '0001_initial'),
         ('gas', '0001_initial'),
         ('orders', '0001_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
