@@ -14,16 +14,6 @@ class RegisterUser(generics.CreateAPIView):
     serializer_class = UserSerializer
     permission_classes = [AllowAny]
 
-    def perform_create(self, serializer):
-        user = serializer.save()
-        if user.role == 'DEALER':
-            DealerProfile.objects.create(
-                user=user,
-                name=f"Dealer {user.phone_number}",
-                latitude=0.0,
-                longitude=0.0,
-                delivery_radius=5,
-            )
 
 class LoginUser(generics.GenericAPIView):
     serializer_class = LoginSerializer
@@ -39,6 +29,24 @@ class LoginUser(generics.GenericAPIView):
         try:
             user = User.objects.get(phone_number=phone)
             if user.check_password(password):
+
+                # Block unapproved dealers
+                if user.role == 'DEALER':
+                    try:
+                        dealer = DealerProfile.objects.get(user=user)
+                        if dealer.status == 'PENDING':
+                            return Response(
+                                {"error": "Your dealer application is still pending approval."},
+                                status=status.HTTP_403_FORBIDDEN
+                            )
+                        elif dealer.status == 'REJECTED':
+                            return Response(
+                                {"error": "Your dealer application has been rejected."},
+                                status=status.HTTP_403_FORBIDDEN
+                            )
+                    except DealerProfile.DoesNotExist:
+                        pass
+
                 refresh = RefreshToken.for_user(user)
 
                 dealer_id = None

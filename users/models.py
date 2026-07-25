@@ -27,7 +27,7 @@ class User(AbstractBaseUser, PermissionsMixin):  # Add PermissionsMixin
         ('ADMIN', 'Admin'),
     )
 
-    phone_number = models.CharField(max_length=15, primary_key=True)
+    phone_number = models.CharField(max_length=15, unique=True, primary_key=True)
     email = models.EmailField(unique=True, null=True, blank=True)
     role = models.CharField(max_length=10, choices=ROLE_CHOICES)
     is_active = models.BooleanField(default=True)
