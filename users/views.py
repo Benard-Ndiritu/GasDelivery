@@ -155,3 +155,12 @@ class ResetPassword(generics.GenericAPIView):
         otp_obj.save()
 
         return Response({"message": "Password reset successfully"}, status=status.HTTP_200_OK)
+
+class IsAdmin(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.role == 'ADMIN'
+
+class ListUsers(generics.ListAPIView):
+    serializer_class = UserSerializer
+    permission_classes = [IsAdmin]
+    queryset = User.objects.all().order_by('-created_at')

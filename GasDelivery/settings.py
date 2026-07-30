@@ -17,6 +17,10 @@ import dj_database_url
 from pathlib import Path
 CORS_ALLOW_ALL_ORIGINS = True
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
 
 SIMPLE_JWT = {
     'USER_ID_FIELD': 'phone_number',
