@@ -67,3 +67,8 @@ class DealerInventoryView(generics.ListAPIView):
     def get_queryset(self):
         dealer_id = self.kwargs['dealer_id']
         return GasInventory.objects.filter(dealer__id=dealer_id, stock_available=True)
+
+class GasTypeDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = GasType.objects.all()
+    serializer_class = GasTypeSerializer
+    permission_classes = [IsAdminUser]
