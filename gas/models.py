@@ -23,7 +23,7 @@ class GasInventory(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        unique_together = ('dealer', 'cylinder_size')
+        unique_together = ('dealer', 'gas_type')
 
     def __str__(self):
         return f"{self.dealer.name} - {self.gas_type.name}"
