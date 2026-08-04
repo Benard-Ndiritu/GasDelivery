@@ -6,7 +6,7 @@ class GasType(models.Model):
         ('6kg', '6kg'),
         ('13kg', '13kg'),
     )
-    name = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=100)
     cylinder_size = models.CharField(max_length=5, choices=CYLINDER_CHOICES)
     created_at = models.DateTimeField(auto_now_add=True)
 
