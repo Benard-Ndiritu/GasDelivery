@@ -127,3 +127,12 @@ class CancelOrderView(APIView):
         order.status = 'cancelled'
         order.save()
         return Response(OrderSerializer(order).data)
+
+class IsAdmin(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.role == 'ADMIN'
+
+class ListAllOrders(generics.ListAPIView):
+    serializer_class = OrderSerializer
+    permission_classes = [IsAdmin]
+    queryset = Order.objects.all().order_by('-created_at')
