@@ -136,3 +136,16 @@ class ListAllOrders(generics.ListAPIView):
     serializer_class = OrderSerializer
     permission_classes = [IsAdmin]
     queryset = Order.objects.all().order_by('-created_at')
+
+
+class OrderStats(APIView):
+    permission_classes = [IsAdmin]
+
+    def get(self, request):
+        return Response({
+            'total': Order.objects.count(),
+            'pending': Order.objects.filter(status='pending').count(),
+            'completed': Order.objects.filter(status='completed').count(),
+            'cancelled': Order.objects.filter(status='cancelled').count(),
+            'delivering': Order.objects.filter(status='delivering').count(),
+        })

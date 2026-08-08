@@ -20,6 +20,7 @@ CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "https://gas-admin-9l4n-pxdu99wsj-ndiritus-projects.vercel.app",
 ]
 
 SIMPLE_JWT = {
@@ -39,7 +40,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-c3zi%n0%(!q%o0d-7h)&al^od4^zsv6in%epm8t(xak0$+nb-z'
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '127.0.0.1,localhost').split(',')
 
