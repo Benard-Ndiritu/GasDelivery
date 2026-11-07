@@ -1,74 +1,70 @@
 from rest_framework import generics, permissions
-from rest_framework.exceptions import PermissionDenied
-from .models import GasType, GasInventory
-from .serializers import GasTypeSerializer, GasInventorySerializer
-from dealers.models import DealerProfile
+
+from users.permissions import IsAdmin, IsApprovedDealer
+
+from .models import GasInventory, GasType
+from .serializers import GasInventorySerializer, GasTypeSerializer
 
 
-class IsAdminUser(permissions.BasePermission):
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'ADMIN'
-
-
-class IsDealer(permissions.BasePermission):
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'DEALER'
-
-
-# Gas Types — admin creates, anyone authenticated can view
 class GasTypeListCreateView(generics.ListCreateAPIView):
-    queryset = GasType.objects.all()
+    """Admin creates gas types; any authenticated user can list them."""
+
+    queryset = GasType.objects.all().order_by('name', 'cylinder_size')
     serializer_class = GasTypeSerializer
 
     def get_permissions(self):
         if self.request.method == 'POST':
-            return [IsAdminUser()]
+            return [IsAdmin()]
         return [permissions.IsAuthenticated()]
 
-
-# Dealer's own inventory — list and add
-class GasInventoryListCreateView(generics.ListCreateAPIView):
-    serializer_class = GasInventorySerializer
-    permission_classes = [IsDealer]
-
-    def get_queryset(self):
-        try:
-            dealer = DealerProfile.objects.get(user=self.request.user)
-        except DealerProfile.DoesNotExist:
-            raise PermissionDenied("You don't have a dealer profile.")
-        return GasInventory.objects.filter(dealer=dealer)
-
-    def perform_create(self, serializer):
-        try:
-            dealer = DealerProfile.objects.get(user=self.request.user)
-        except DealerProfile.DoesNotExist:
-            raise PermissionDenied("You don't have a dealer profile.")
-        serializer.save(dealer=dealer)
-
-
-# Update inventory item (price, stock)
-class GasInventoryUpdateView(generics.UpdateAPIView):
-    serializer_class = GasInventorySerializer
-    permission_classes = [IsDealer]
-
-    def get_queryset(self):
-        try:
-            dealer = DealerProfile.objects.get(user=self.request.user)
-        except DealerProfile.DoesNotExist:
-            raise PermissionDenied("You don't have a dealer profile.")
-        return GasInventory.objects.filter(dealer=dealer)
-
-
-# Public view — customers see available inventory for a dealer
-class DealerInventoryView(generics.ListAPIView):
-    serializer_class = GasInventorySerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        dealer_id = self.kwargs['dealer_id']
-        return GasInventory.objects.filter(dealer__id=dealer_id, stock_available=True)
 
 class GasTypeDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = GasType.objects.all()
     serializer_class = GasTypeSerializer
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAdmin]
+
+
+class DealerInventoryMixin:
+    serializer_class = GasInventorySerializer
+    permission_classes = [IsApprovedDealer]
+
+    def get_dealer(self):
+        return self.request.user.dealerprofile
+
+    def get_queryset(self):
+        return (
+            GasInventory.objects.filter(dealer=self.get_dealer())
+            .select_related('gas_type', 'dealer')
+            .order_by('gas_type__name')
+        )
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['dealer'] = getattr(self.request.user, 'dealerprofile', None)
+        return context
+
+
+class GasInventoryListCreateView(DealerInventoryMixin, generics.ListCreateAPIView):
+    """The logged-in dealer's inventory: list and add items."""
+
+    def perform_create(self, serializer):
+        serializer.save(dealer=self.get_dealer())
+
+
+class GasInventoryDetailView(DealerInventoryMixin, generics.RetrieveUpdateDestroyAPIView):
+    """Retrieve, update (price, stock) or remove one of the dealer's inventory items."""
+
+
+class DealerInventoryView(generics.ListAPIView):
+    """Customers browse a dealer's in-stock items."""
+
+    serializer_class = GasInventorySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return GasInventory.objects.filter(
+            dealer__id=self.kwargs['dealer_id'],
+            dealer__status='APPROVED',
+            dealer__is_active=True,
+            stock_available=True,
+        ).select_related('gas_type', 'dealer')

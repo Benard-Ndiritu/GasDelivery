@@ -1,31 +1,24 @@
-"""
-ASGI config for GasDelivery project.
-
-It exposes the ASGI callable as a module-level variable named ``application``.
-
-For more information on this file, see
-https://docs.djangoproject.com/en/5.1/howto/deployment/asgi/
-"""
+"""ASGI entrypoint: serves HTTP (Django) and WebSockets (Channels)."""
 
 import os
 
-
 from django.core.asgi import get_asgi_application
-
-from django.core.asgi import get_asgi_application
-from channels.routing import ProtocolTypeRouter, URLRouter
-from channels.auth import AuthMiddlewareStack
-import realtime.routing
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'GasDelivery.settings')
 
+# Initialise Django before importing anything that touches models.
+django_asgi_app = get_asgi_application()
+
+from channels.routing import ProtocolTypeRouter, URLRouter  # noqa: E402
+
+import realtime.routing  # noqa: E402
+from realtime.middleware import JWTAuthMiddleware  # noqa: E402
+
+# WebSockets authenticate with a JWT (not cookies), so no Origin check is needed;
+# native mobile clients usually send no Origin header at all.
 application = ProtocolTypeRouter({
-    'http': get_asgi_application(),
-    'websocket': AuthMiddlewareStack(
-        URLRouter(
-            realtime.routing.websocket_urlpatterns
-        )
+    'http': django_asgi_app,
+    'websocket': JWTAuthMiddleware(
+        URLRouter(realtime.routing.websocket_urlpatterns)
     ),
 })
-
-

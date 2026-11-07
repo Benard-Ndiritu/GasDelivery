@@ -1,157 +1,166 @@
-from rest_framework.views import APIView
+import logging
+
+from django.conf import settings
+from django.db import transaction
+from django.utils.crypto import constant_time_compare
+from rest_framework import generics, status
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework import status
-from .models import Payment
-from .serializers import PaymentSerializer
+from rest_framework.views import APIView
+
 from orders.models import Order
-from .mpesa import stk_push
+from users.permissions import IsAdmin, IsApprovedDealer, IsCustomer
 
-class IsCustomer(IsAuthenticated):
-    def has_permission(self, request, view):
-        return super().has_permission(request, view) and request.user.role == 'CUSTOMER'
+from .models import Payment
+from .serializers import InitiatePaymentSerializer, MpesaSTKSerializer, PaymentSerializer
+from .services import (
+    PAYABLE_ORDER_STATUSES,
+    PaymentError,
+    confirm_cash_payment,
+    handle_stk_callback,
+    refresh_mpesa_status,
+    start_mpesa_payment,
+)
 
-class IsDealer(IsAuthenticated):
-    def has_permission(self, request, view):
-        return super().has_permission(request, view) and request.user.role == 'DEALER'
+logger = logging.getLogger(__name__)
 
-# Customer initiates payment
-class InitiatePaymentView(APIView):
+STK_SENT_MESSAGE = 'STK Push sent to your phone. Enter M-Pesa PIN to complete payment.'
+
+
+def _error(exc):
+    return Response({'error': exc.message}, status=exc.status_code)
+
+
+class MpesaSTKPushView(APIView):
+    """Customer pays an order with M-Pesa: sends the STK prompt to their phone."""
+
     permission_classes = [IsCustomer]
 
     def post(self, request):
-        order_id = request.data.get('order_id')
-        method = request.data.get('method')  # 'MPESA' or 'CASH'
-
+        serializer = MpesaSTKSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
         try:
-            order = Order.objects.get(id=order_id, customer=request.user)
-        except Order.DoesNotExist:
-            return Response({"error": "Order not found"}, status=404)
+            payment, result = start_mpesa_payment(
+                serializer.validated_data['order_id'],
+                request.user,
+                serializer.validated_data.get('phone_number') or None,
+            )
+        except PaymentError as exc:
+            return _error(exc)
+        return Response({
+            'message': STK_SENT_MESSAGE,
+            'checkout_request_id': payment.checkout_request_id,
+            'payment': PaymentSerializer(payment).data,
+        })
 
-        if hasattr(order, 'payment'):
-            return Response({"error": "Payment already exists for this order"}, status=400)
 
-        if order.status not in ['pending', 'accepted']:
-            return Response({"error": "Order is not payable"}, status=400)
+class InitiatePaymentView(APIView):
+    """
+    Customer chooses how to pay. MPESA sends an STK push; CASH records a pending
+    cash payment that the dealer confirms on delivery.
+    """
 
-        payment = Payment.objects.create(
-            order=order,
-            method=method,
-            amount=order.price + order.delivery_fee,
-            status='PENDING'
-        )
-
-        return Response(PaymentSerializer(payment).data, status=201)
-
-# M-Pesa callback (called by Safaricom, no auth)
-class MpesaPaymentCallback(APIView):
-    authentication_classes = []
-    permission_classes = []
+    permission_classes = [IsCustomer]
 
     def post(self, request):
-        data = request.data
-        
+        serializer = InitiatePaymentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        if data['method'] == 'MPESA':
+            try:
+                payment, _ = start_mpesa_payment(data['order_id'], request.user, data.get('phone_number') or None)
+            except PaymentError as exc:
+                return _error(exc)
+            return Response({'message': STK_SENT_MESSAGE, **PaymentSerializer(payment).data},
+                            status=status.HTTP_201_CREATED)
+
+        with transaction.atomic():
+            order = Order.objects.select_for_update().filter(id=data['order_id'], customer=request.user).first()
+            if order is None:
+                return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+            if order.status not in PAYABLE_ORDER_STATUSES:
+                return Response({'error': 'Order is not payable'}, status=status.HTTP_400_BAD_REQUEST)
+            payment = Payment.objects.filter(order=order).first()
+            if payment and payment.status == 'PAID':
+                return Response({'error': 'This order has already been paid'}, status=status.HTTP_400_BAD_REQUEST)
+            payment = payment or Payment(order=order)
+            payment.method, payment.status, payment.amount = 'CASH', 'PENDING', order.total
+            payment.checkout_request_id = None
+            payment.save()
+
+        return Response(PaymentSerializer(payment).data, status=status.HTTP_201_CREATED)
+
+
+class MpesaPaymentCallback(APIView):
+    """Called by Safaricom. Always acknowledges, so Daraja doesn't retry forever."""
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = []
+
+    def post(self, request, token=None):
+        expected = settings.MPESA_CALLBACK_TOKEN
+        if expected and not constant_time_compare(token or '', expected):
+            logger.warning('Rejected M-Pesa callback with a bad token')
+            return Response({'ResultCode': 1, 'ResultDesc': 'Rejected'}, status=status.HTTP_403_FORBIDDEN)
+
         try:
-            # Safaricom sends data in this nested format
-            stk_callback = data['Body']['stkCallback']
-            result_code = stk_callback['ResultCode']
-            checkout_request_id = stk_callback['CheckoutRequestID']
-            
-            if result_code == 0:
-                # Payment successful
-                callback_metadata = stk_callback['CallbackMetadata']['Item']
-                
-                receipt = next((item['Value'] for item in callback_metadata if item['Name'] == 'MpesaReceiptNumber'), None)
-                amount = next((item['Value'] for item in callback_metadata if item['Name'] == 'Amount'), None)
-                phone = next((item['Value'] for item in callback_metadata if item['Name'] == 'PhoneNumber'), None)
-
-                # Find payment by amount and update
-                payment = Payment.objects.filter(status='PENDING').last()
-                if payment:
-                    payment.status = 'PAID'
-                    payment.mpesa_receipt = receipt
-                    payment.save()
-
-                    payment.order.status = 'completed'
-                    payment.order.save()
-
-            return Response({'ResultCode': 0, 'ResultDesc': 'Success'})
-
-        except Exception as e:
+            stk_callback = request.data['Body']['stkCallback']
+        except (KeyError, TypeError):
+            logger.warning('Malformed M-Pesa callback: %s', request.data)
             return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
 
-# Dealer confirms cash payment
+        try:
+            handle_stk_callback(stk_callback)
+        except Exception:
+            logger.exception('Error processing M-Pesa callback')
+        return Response({'ResultCode': 0, 'ResultDesc': 'Accepted'})
+
+
 class CashPaymentConfirm(APIView):
-    permission_classes = [IsDealer]
+    """Dealer confirms cash was received; this also completes the order."""
+
+    permission_classes = [IsApprovedDealer]
 
     def post(self, request, order_id):
         try:
-            order = Order.objects.get(id=order_id, dealer=request.user.dealerprofile)
-        except Order.DoesNotExist:
-            return Response({"error": "Order not found"}, status=404)
-
-        if hasattr(order, 'payment'):
-            return Response({"error": "Payment already exists"}, status=400)
-
-        payment = Payment.objects.create(
-            order=order,
-            method='CASH',
-            amount=order.price + order.delivery_fee,
-            status='PAID'
-        )
-
-        order.status = 'completed'
-        order.save()
-
+            payment = confirm_cash_payment(order_id, request.user.dealerprofile)
+        except PaymentError as exc:
+            return _error(exc)
         return Response(PaymentSerializer(payment).data)
 
-# Get payment status
+
 class PaymentStatusView(APIView):
+    """Payment for an order, visible to its customer, its dealer, or an admin."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request, order_id):
-        try:
-            payment = Payment.objects.get(order_id=order_id)
-        except Payment.DoesNotExist:
-            return Response({"error": "Payment not found"}, status=404)
+        user = request.user
+        payments = Payment.objects.select_related('order')
+        if user.role == 'CUSTOMER':
+            payments = payments.filter(order__customer=user)
+        elif user.role == 'DEALER':
+            payments = payments.filter(order__dealer__user=user)
+        elif user.role != 'ADMIN':
+            payments = payments.none()
 
+        payment = payments.filter(order_id=order_id).first()
+        if payment is None:
+            return Response({'error': 'Payment not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        payment = refresh_mpesa_status(payment)
         return Response(PaymentSerializer(payment).data)
-    
 
-class MpesaSTKPushView(APIView):
-    permission_classes = [IsCustomer]
 
-    def post(self, request):
-        order_id = request.data.get('order_id')
-        phone_number = request.user.phone_number
+class ListAllPayments(generics.ListAPIView):
+    serializer_class = PaymentSerializer
+    permission_classes = [IsAdmin]
 
-        try:
-            order = Order.objects.get(id=order_id, customer=request.user)
-        except Order.DoesNotExist:
-            return Response({"error": "Order not found"}, status=404)
-
-        if hasattr(order, 'payment'):
-            return Response({"error": "Payment already exists"}, status=400)
-
-        amount = order.price + order.delivery_fee
-
-        # Create pending payment
-        payment = Payment.objects.create(
-            order=order,
-            method='MPESA',
-            amount=amount,
-            status='PENDING'
-        )
-
-        # Trigger STK Push
-        result = stk_push(phone_number, amount, order_id)
-
-        if result.get('ResponseCode') == '0':
-            return Response({
-                "message": "STK Push sent to your phone. Enter M-Pesa PIN to complete payment.",
-                "checkout_request_id": result.get('CheckoutRequestID')
-            })
-        else:
-            payment.status = 'FAILED'
-            payment.save()
-            return Response({"error": "STK Push failed", "details": result}, status=400)
+    def get_queryset(self):
+        queryset = Payment.objects.select_related('order').order_by('-created_at')
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter.upper())
+        return queryset

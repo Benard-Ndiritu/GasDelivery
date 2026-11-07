@@ -1,151 +1,178 @@
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from rest_framework import status, generics, permissions
 from django.db import transaction
-from .models import Order
-from .serializers import OrderSerializer
-from .services import find_available_dealer
+from django.db.models import Count, Q, Sum
+from rest_framework import generics, status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
 from gas.models import GasType
-from channels.layers import get_channel_layer
-from asgiref.sync import async_to_sync
+from users.permissions import IsAdmin, IsApprovedDealer, IsCustomer
 
-class IsCustomer(IsAuthenticated):
-    def has_permission(self, request, view):
-        return super().has_permission(request, view) and request.user.role == 'CUSTOMER'
+from .models import Order
+from .serializers import OrderSerializer, PlaceOrderSerializer, UpdateOrderStatusSerializer
+from .services import find_available_dealer, notify_dealer_new_order
 
-class IsDealer(IsAuthenticated):
-    def has_permission(self, request, view):
-        return super().has_permission(request, view) and request.user.role == 'DEALER'
 
-# Customer places an order
+def order_queryset():
+    return Order.objects.select_related('customer', 'dealer', 'gas_type', 'payment')
+
+
 class PlaceOrderView(APIView):
     permission_classes = [IsCustomer]
 
-    @transaction.atomic
     def post(self, request):
-        data = request.data
-        gas_type_id = data.get('gas_type_id')
-        order_type = data.get('order_type')  # 'refill' or 'exchange'
-        customer_lat = data.get('latitude')
-        customer_lon = data.get('longitude')
+        serializer = PlaceOrderSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
 
-        if not all([gas_type_id, order_type, customer_lat, customer_lon]):
-            return Response({"error": "gas_type_id, order_type, latitude, longitude are required"}, status=400)
+        gas_type = GasType.objects.filter(id=data['gas_type_id']).first()
+        if gas_type is None:
+            return Response({'error': 'Gas type not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        try:
-            gas_type = GasType.objects.get(id=gas_type_id)
-        except GasType.DoesNotExist:
-            return Response({"error": "Gas type not found"}, status=404)
+        dealer, inventory = find_available_dealer(data['latitude'], data['longitude'], gas_type.id)
+        if dealer is None:
+            return Response({'error': 'No dealer available in your area'}, status=status.HTTP_404_NOT_FOUND)
 
-        dealer, inventory = find_available_dealer(customer_lat, customer_lon, gas_type_id)
-        if not dealer:
-            return Response({"error": "No dealer available in your area"}, status=404)
+        price = inventory.price_refill if data['order_type'] == 'refill' else inventory.price_exchange
 
-        price = inventory.price_refill if order_type == 'refill' else inventory.price_exchange
+        with transaction.atomic():
+            order = Order.objects.create(
+                customer=request.user,
+                dealer=dealer,
+                gas_type=gas_type,
+                order_type=data['order_type'],
+                price=price,
+                delivery_fee=0,
+                customer_latitude=data['latitude'],
+                customer_longitude=data['longitude'],
+            )
+            transaction.on_commit(lambda: notify_dealer_new_order(order))
 
-        order = Order.objects.create(
-            customer=request.user,
-            dealer=dealer,
-            gas_type=gas_type,
-            order_type=order_type,
-            price=price,
-            delivery_fee=0,
-            customer_latitude=customer_lat,
-            customer_longitude=customer_lon,
-        )
+        return Response(OrderSerializer(order).data, status=status.HTTP_201_CREATED)
 
-        channel_layer = get_channel_layer()
-        async_to_sync(channel_layer.group_send)(
-            f'dealer_{dealer.id}',
-            {
-                'type': 'order_notification',
-                'order_id': order.id,
-                'customer_phone': request.user.phone_number,
-                'gas_type': gas_type.name,
-                'price': str(order.price),
-            }
-        )
 
-        return Response(OrderSerializer(order).data, status=201)
-
-# Customer views their orders
-class CustomerOrderListView(APIView):
+class CustomerOrderListView(generics.ListAPIView):
+    serializer_class = OrderSerializer
     permission_classes = [IsCustomer]
 
-    def get(self, request):
-        orders = Order.objects.filter(customer=request.user).order_by('-created_at')
-        return Response(OrderSerializer(orders, many=True).data)
+    def get_queryset(self):
+        return order_queryset().filter(customer=self.request.user)
 
-# Dealer views incoming orders
-class DealerOrderListView(APIView):
-    permission_classes = [IsDealer]
 
-    def get(self, request):
-        try:
-            orders = Order.objects.filter(dealer=request.user.dealerprofile).order_by('-created_at')
-            return Response(OrderSerializer(orders, many=True).data)
-        except Exception:
-            return Response({"error": "Dealer profile not found"}, status=404)
-# Dealer updates order status
+class DealerOrderListView(generics.ListAPIView):
+    serializer_class = OrderSerializer
+    permission_classes = [IsApprovedDealer]
+
+    def get_queryset(self):
+        queryset = order_queryset().filter(dealer=self.request.user.dealerprofile)
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter.lower())
+        return queryset
+
+
+class OrderDetailView(generics.RetrieveAPIView):
+    """An order visible to its customer, its dealer, or an admin."""
+
+    serializer_class = OrderSerializer
+    permission_classes = [IsAuthenticated]
+    lookup_url_kwarg = 'order_id'
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = order_queryset()
+        if user.role == 'ADMIN':
+            return queryset
+        if user.role == 'DEALER':
+            return queryset.filter(dealer__user=user)
+        return queryset.filter(customer=user)
+
+
 class UpdateOrderStatusView(APIView):
-    permission_classes = [IsDealer]
+    permission_classes = [IsApprovedDealer]
 
     def put(self, request, order_id):
-        try:
-            order = Order.objects.get(id=order_id, dealer=request.user.dealerprofile)
-        except Order.DoesNotExist:
-            return Response({"error": "Order not found"}, status=404)
+        serializer = UpdateOrderStatusSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        new_status = serializer.validated_data['status']
 
-        new_status = request.data.get('status')
-        valid_transitions = {
-            'pending': ['accepted', 'cancelled'],
-            'accepted': ['delivering', 'cancelled'],
-            'delivering': ['completed'],
-        }
+        with transaction.atomic():
+            order = (
+                Order.objects.select_for_update()
+                .filter(id=order_id, dealer=request.user.dealerprofile)
+                .first()
+            )
+            if order is None:
+                return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        if new_status not in valid_transitions.get(order.status, []):
-            return Response({"error": f"Cannot move from {order.status} to {new_status}"}, status=400)
+            if new_status not in Order.DEALER_TRANSITIONS.get(order.status, []):
+                return Response(
+                    {'error': f'Cannot move from {order.status} to {new_status}'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        order.status = new_status
-        order.save()
-        return Response(OrderSerializer(order).data)
+            order.status = new_status
+            order.save(update_fields=['status', 'updated_at'])
 
-# Customer cancels their order
+        return Response(OrderSerializer(order_queryset().get(pk=order.pk)).data)
+
+    patch = put
+
+
 class CancelOrderView(APIView):
     permission_classes = [IsCustomer]
 
     def put(self, request, order_id):
-        try:
-            order = Order.objects.get(id=order_id, customer=request.user)
-        except Order.DoesNotExist:
-            return Response({"error": "Order not found"}, status=404)
+        with transaction.atomic():
+            order = (
+                Order.objects.select_for_update()
+                .filter(id=order_id, customer=request.user)
+                .first()
+            )
+            if order is None:
+                return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+            if order.status != 'pending':
+                return Response({'error': 'Only pending orders can be cancelled'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            payment = getattr(order, 'payment', None)
+            if payment and payment.status == 'PAID':
+                return Response(
+                    {'error': 'This order has already been paid. Please contact support to cancel it.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
-        if order.status != 'pending':
-            return Response({"error": "Only pending orders can be cancelled"}, status=400)
+            order.status = 'cancelled'
+            order.save(update_fields=['status', 'updated_at'])
 
-        order.status = 'cancelled'
-        order.save()
-        return Response(OrderSerializer(order).data)
+        return Response(OrderSerializer(order_queryset().get(pk=order.pk)).data)
 
-class IsAdmin(permissions.BasePermission):
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'ADMIN'
+    post = put
+
 
 class ListAllOrders(generics.ListAPIView):
     serializer_class = OrderSerializer
     permission_classes = [IsAdmin]
-    queryset = Order.objects.all().order_by('-created_at')
+
+    def get_queryset(self):
+        queryset = order_queryset()
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter.lower())
+        return queryset
 
 
 class OrderStats(APIView):
     permission_classes = [IsAdmin]
 
     def get(self, request):
-        return Response({
-            'total': Order.objects.count(),
-            'pending': Order.objects.filter(status='pending').count(),
-            'completed': Order.objects.filter(status='completed').count(),
-            'cancelled': Order.objects.filter(status='cancelled').count(),
-            'delivering': Order.objects.filter(status='delivering').count(),
-        })
+        stats = Order.objects.aggregate(
+            total=Count('id'),
+            pending=Count('id', filter=Q(status='pending')),
+            accepted=Count('id', filter=Q(status='accepted')),
+            delivering=Count('id', filter=Q(status='delivering')),
+            completed=Count('id', filter=Q(status='completed')),
+            cancelled=Count('id', filter=Q(status='cancelled')),
+            revenue=Sum('price', filter=Q(status='completed')),
+        )
+        stats['revenue'] = str(stats['revenue'] or 0)
+        return Response(stats)
