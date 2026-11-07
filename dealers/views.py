@@ -1,66 +1,28 @@
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.exceptions import PermissionDenied
+
+from users.permissions import IsAdmin, IsApprovedDealer, IsDealer
+
 from .models import DealerProfile
-from .serializers import DealerProfileSerializer
-from users.models import User
-
-
-class IsDealer(permissions.BasePermission):
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'DEALER'
-
-
-class IsAdmin(permissions.BasePermission):
-    def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role == 'ADMIN'
+from .serializers import DealerApplicationSerializer, DealerProfileSerializer
 
 
 class ApplyAsDealer(APIView):
     permission_classes = [permissions.AllowAny]
+    throttle_scope = 'auth'
 
     def post(self, request):
-        phone_number = request.data.get('phone_number')
-        name = request.data.get('name')
-        shop_name = request.data.get('shop_name')
-        password = request.data.get('password')
-        latitude = request.data.get('latitude', 0.0)
-        longitude = request.data.get('longitude', 0.0)
-        delivery_radius = request.data.get('delivery_radius', 5)
-
-        if not all([phone_number, name, shop_name, password]):
-            return Response(
-                {"error": "phone_number, name, shop_name and password are required"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if User.objects.filter(phone_number=phone_number).exists():
-            return Response(
-                {"error": "An account with this phone number already exists."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        user = User.objects.create_user(
-            phone_number=phone_number,
-            password=password,
-            role='DEALER'
-        )
-
-        DealerProfile.objects.create(
-            user=user,
-            name=name,
-            shop_name=shop_name,
-            phone_number=phone_number,
-            latitude=latitude,
-            longitude=longitude,
-            delivery_radius=delivery_radius,
-            status='PENDING'
-        )
-
+        serializer = DealerApplicationSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        dealer = serializer.save()
         return Response(
-            {"message": "Application submitted successfully! You will be notified once approved."},
-            status=status.HTTP_201_CREATED
+            {
+                'message': 'Application submitted successfully! You will be notified once approved.',
+                'dealer_id': dealer.id,
+            },
+            status=status.HTTP_201_CREATED,
         )
 
 
@@ -69,69 +31,90 @@ class ListDealerApplications(generics.ListAPIView):
     permission_classes = [IsAdmin]
 
     def get_queryset(self):
-        status_filter = self.request.query_params.get('status', None)
+        queryset = DealerProfile.objects.select_related('user').order_by('-created_at')
+        status_filter = self.request.query_params.get('status')
         if status_filter:
-            return DealerProfile.objects.filter(status=status_filter)
-        return DealerProfile.objects.all()
+            queryset = queryset.filter(status=status_filter.upper())
+        return queryset
 
 
 class ApproveDealerApplication(APIView):
+    """Admin action: {"action": "approve" | "reject" | "deactivate" | "activate"}."""
+
     permission_classes = [IsAdmin]
 
     def post(self, request, pk):
-        try:
-            dealer = DealerProfile.objects.get(id=pk)
-        except DealerProfile.DoesNotExist:
-            return Response({"error": "Dealer not found"}, status=status.HTTP_404_NOT_FOUND)
+        dealer = DealerProfile.objects.filter(id=pk).first()
+        if dealer is None:
+            return Response({'error': 'Dealer not found'}, status=status.HTTP_404_NOT_FOUND)
 
         action = request.data.get('action')
         if action == 'approve':
-            dealer.status = 'APPROVED'
-            dealer.is_active = True
-            dealer.save()
-            return Response({"message": f"{dealer.name} has been approved."})
+            dealer.status, dealer.is_active = 'APPROVED', True
+            message = f'{dealer.name} has been approved.'
         elif action == 'reject':
-            dealer.status = 'REJECTED'
+            dealer.status, dealer.is_active = 'REJECTED', False
+            message = f'{dealer.name} has been rejected.'
+        elif action == 'deactivate':
             dealer.is_active = False
-            dealer.save()
-            return Response({"message": f"{dealer.name} has been rejected."})
+            message = f'{dealer.name} has been deactivated.'
+        elif action == 'activate':
+            if dealer.status != 'APPROVED':
+                return Response({'error': 'Only approved dealers can be activated.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            dealer.is_active = True
+            message = f'{dealer.name} has been activated.'
         else:
-            return Response({"error": "Action must be 'approve' or 'reject'"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {'error': "Action must be 'approve', 'reject', 'activate' or 'deactivate'"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        dealer.save(update_fields=['status', 'is_active', 'updated_at'])
+        return Response({'message': message, 'dealer': DealerProfileSerializer(dealer).data})
 
 
 class DealerApplicationStatus(APIView):
+    """The logged-in dealer's own profile, including application status."""
+
     permission_classes = [IsDealer]
 
     def get(self, request):
-        try:
-            dealer = DealerProfile.objects.get(user=request.user)
-            return Response({
-                "status": dealer.status,
-                "name": dealer.name,
-                "shop_name": dealer.shop_name,
-            })
-        except DealerProfile.DoesNotExist:
-            return Response({"error": "No application found"}, status=status.HTTP_404_NOT_FOUND)
+        dealer = DealerProfile.objects.filter(user=request.user).select_related('user').first()
+        if dealer is None:
+            return Response({'error': 'No application found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response(DealerProfileSerializer(dealer).data)
 
 
 class ListDealers(generics.ListAPIView):
-    queryset = DealerProfile.objects.filter(is_active=True, status='APPROVED')
     serializer_class = DealerProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return (
+            DealerProfile.objects.filter(is_active=True, status='APPROVED')
+            .select_related('user')
+            .order_by('shop_name')
+        )
 
 
 class DealerDetail(generics.RetrieveAPIView):
-    queryset = DealerProfile.objects.all()
     serializer_class = DealerProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        queryset = DealerProfile.objects.select_related('user')
+        if self.request.user.role == 'ADMIN':
+            return queryset
+        return queryset.filter(is_active=True, status='APPROVED')
 
-class UpdateDealerProfile(generics.UpdateAPIView):
+
+class UpdateDealerProfile(generics.RetrieveUpdateAPIView):
     serializer_class = DealerProfileSerializer
-    permission_classes = [IsDealer]
+    permission_classes = [IsApprovedDealer]
 
     def get_object(self):
-        try:
-            return DealerProfile.objects.get(user=self.request.user)
-        except DealerProfile.DoesNotExist:
-            raise PermissionDenied("You don't have a dealer profile.")
+        dealer = DealerProfile.objects.filter(user=self.request.user).first()
+        if dealer is None:
+            raise NotFound("You don't have a dealer profile.")
+        return dealer

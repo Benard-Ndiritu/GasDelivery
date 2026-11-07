@@ -1,5 +1,29 @@
-pesa/
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+pesa/
+venv/
+.venv/
+env/
+
+# Local data / build output
 db.sqlite3
+db.sqlite3-journal
+staticfiles/
+media/
+
+# Secrets
 .env
+.env.*
+!.env.example
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
